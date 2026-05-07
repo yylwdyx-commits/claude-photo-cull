@@ -6,6 +6,7 @@ venv/
 .env
 .env.local
 .DS_Store
+.ruff_cache/
 
 # test outputs (but keep examples/)
 keep/
