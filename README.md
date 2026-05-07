@@ -97,8 +97,25 @@ folder                   folder of photos (recursive)
 --threshold N            (--no-claude only) min SigLIP score to keep (default 5.5)
 --model X                Claude model alias or full id (default: haiku)
 --workers N              concurrent Claude calls (default 5)
+--prompt-file PATH       custom curator system prompt (overrides built-in)
+--lang en|zh             report language (default: en)
 --dry-run                report only, write nothing
 ```
+
+## Customizing the curator
+
+The default prompt is harsh and opinionated. To use your own:
+
+```bash
+python cull.py photos/ --prompt-file my_curator.txt
+```
+
+The prompt MUST instruct Claude to return the JSON shape in `CLAUDE_SYSTEM` (see `cull.py`): `{what_it_says, keep, score, reject_reason, issues, crop, note}`. Use the built-in as a starting template — copy `CLAUDE_SYSTEM` from `cull.py` and edit.
+
+## Platform notes
+
+- **macOS / Linux**: full support.
+- **Windows**: supported but pass `--copy` (default symlink behavior needs admin / dev mode). RAW formats and `--bake` work if you install jpeg-turbo from your package manager. Tested less than macOS — issues welcome.
 
 ## API key locations searched
 

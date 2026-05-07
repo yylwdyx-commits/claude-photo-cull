@@ -50,6 +50,8 @@ Pass arguments based on what the user asked for. Defaults already encode the "st
 | `--threshold N` | 5.5 | `--no-claude` only: SigLIP keep threshold. |
 | `--model X` | `haiku` | Alias `haiku`/`sonnet`/`opus` OR a full model id like `claude-sonnet-4-6`. Use sonnet/opus when user asks for higher quality judgment. |
 | `--workers N` | 5 | Concurrent Claude calls. Bump to 10–20 for >500 photos. |
+| `--prompt-file PATH` | built-in | Use when user wants a different curator philosophy (kinder, genre-specific, etc). Custom prompt MUST return the documented JSON shape. |
+| `--lang en\|zh` | `en` | Report language. Default English; switch to `zh` for Chinese-speaking users. |
 | `--dry-run` | off | Preview only. Use first when the folder is huge or the user is unsure. |
 
 ### Common modes
@@ -68,7 +70,9 @@ The script writes `<output>/report.md` with a Chinese-language Markdown report (
 
 ## Things to watch
 
-- The Claude prompt is intentionally harsh — expect 85–95% reject. If the user complains "too strict", suggest `--local-min 5.0` (skip more low-score candidates so the kept set looks higher quality) or `--model sonnet` (Sonnet is less trigger-happy than Haiku).
+- The Claude prompt is intentionally harsh — expect 85–95% reject. If the user complains "too strict", suggest `--local-min 5.0` (skip more low-score candidates so the kept set looks higher quality), `--model sonnet` (Sonnet is less trigger-happy than Haiku), or `--prompt-file` with a softer custom prompt.
+- If the user is Chinese-speaking or asks for a Chinese report, pass `--lang zh`.
+- On Windows, default to `--copy` (symlinks need admin / dev mode).
 - RAW formats are decoded via `rawpy`; first run on a RAW-heavy folder is slow.
 - On Apple Silicon, SigLIP runs on MPS; first-load downloads ~1GB of weights via HuggingFace.
 - The `.xmp` sidecars only render in Lightroom / Bridge / Capture One. Plain Preview / Photos.app users want `--bake`.

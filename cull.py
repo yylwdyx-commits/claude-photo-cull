@@ -60,7 +60,7 @@ CLAUDE_MODEL_ALIASES = {
     "opus": "claude-opus-4-7",
 }
 
-CLAUDE_SYSTEM = """You are a STRICT photo curator. Your default verdict is REJECT. The user has explicitly asked you: "宁可错杀十张也不放进一张废片." Expect to reject 85-95% of photos shown to you.
+CLAUDE_SYSTEM = """You are a STRICT photo curator. Your default verdict is REJECT. The user has explicitly asked: "I would rather wrongly cut ten than let one mediocre shot through." Expect to reject 85-95% of photos shown to you.
 
 Before deciding, answer in one concrete sentence: "What does this photo SAY?" — meaning the actual content/idea/event, not a description of pixels. If you cannot articulate a real reason for the photo to exist beyond "I was there," REJECT.
 
@@ -238,6 +238,8 @@ JPEGTRAN_PATHS = ("/opt/homebrew/bin/jpegtran",
                   "/opt/homebrew/opt/jpeg-turbo/bin/jpegtran",
                   "/usr/local/bin/jpegtran",
                   "/usr/local/opt/jpeg-turbo/bin/jpegtran",
+                  "/usr/bin/jpegtran",
+                  "/usr/local/sbin/jpegtran",
                   "jpegtran")
 
 
@@ -370,14 +372,14 @@ def crop_sane(crop) -> bool:
     return True
 
 
-def claude_review(client, model_id: str, img: Image.Image) -> dict:
+def claude_review(client, model_id: str, img: Image.Image, system_prompt: str = CLAUDE_SYSTEM) -> dict:
     """Returns parsed JSON from Claude, or {"error": str} on failure."""
     b64 = img_to_jpeg_b64(img)
     try:
         msg = client.messages.create(
             model=model_id,
             max_tokens=600,
-            system=[{"type": "text", "text": CLAUDE_SYSTEM,
+            system=[{"type": "text", "text": system_prompt,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{
                 "role": "user",
@@ -420,8 +422,21 @@ def main():
                     help="Claude model: alias 'haiku'/'sonnet'/'opus' or full model id "
                          "(e.g. claude-sonnet-4-6, claude-haiku-4-5-20251001). Default: haiku")
     ap.add_argument("--workers", type=int, default=5, help="concurrent Claude calls (default 5)")
+    ap.add_argument("--prompt-file", default=None,
+                    help="path to a custom curator system prompt (overrides built-in). "
+                         "The prompt MUST instruct Claude to return the documented JSON shape "
+                         "(see CLAUDE_SYSTEM in source).")
+    ap.add_argument("--lang", choices=("en", "zh"), default="en",
+                    help="report language (default: en)")
     ap.add_argument("--dry-run", action="store_true", help="report only, write nothing")
     args = ap.parse_args()
+
+    system_prompt = CLAUDE_SYSTEM
+    if args.prompt_file:
+        try:
+            system_prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
+        except OSError as e:
+            sys.exit(f"--prompt-file unreadable: {e}")
 
     folder = Path(args.folder).expanduser().resolve()
     if not folder.is_dir():
@@ -432,7 +447,11 @@ def main():
         args.copy = True  # bake requires real files
         jpegtran = find_jpegtran()
         if not jpegtran:
-            sys.exit("--bake needs jpegtran; install with `brew install jpeg-turbo`")
+            sys.exit("--bake needs jpegtran. Install with one of:\n"
+                     "  macOS:        brew install jpeg-turbo\n"
+                     "  Debian/Ubuntu: apt-get install libjpeg-turbo-progs\n"
+                     "  Fedora/RHEL:  dnf install libjpeg-turbo-utils\n"
+                     "  Arch:         pacman -S libjpeg-turbo")
 
     out_dir = Path(args.output).expanduser().resolve() if args.output else folder / "keep"
     if not args.dry_run:
@@ -531,7 +550,7 @@ def main():
               f"(skipping {len(too_low)} below local-min {args.local_min}) …", file=sys.stderr)
 
         def review_one(rec):
-            res = claude_review(client, model_id, rec["_img"])
+            res = claude_review(client, model_id, rec["_img"], system_prompt)
             return rec, res
 
         t3 = time.time()
@@ -617,7 +636,104 @@ def main():
         print(f"report: {out_dir / 'report.md'}", file=sys.stderr)
 
 
+REPORT_STRINGS = {
+    "en": {
+        "title": "# Photo cull report\n",
+        "src": "- **Source**: `{src}`",
+        "dst": "- **Output**: `{dst}`",
+        "mode": "- **Mode**: {mode}",
+        "mode_copy": "copy",
+        "mode_link": "symlink",
+        "mode_bake": "  + jpegtran lossless baked crops",
+        "thresh": "- **Local thresholds**: sharpness ≥ {sharp} · SigLIP ≥ {local_min} (sent to Claude)",
+        "model": "- **Claude model**: {model}",
+        "dedup": "- **Burst-dedup window**: {window}s\n",
+        "summary_h": "## Summary\n",
+        "tbl_head": "| Category | Count |\n|---|---|",
+        "row_total": "| Total | {n} |",
+        "row_keep": "| **Kept** | **{n}** ({cropped} suggest crop) |",
+        "row_dup": "| Burst duplicates dropped | {n} |",
+        "row_blur": "| Blurry rejected | {n} |",
+        "row_low": "| Below local-min (skipped Claude) | {n} |",
+        "row_reject": "| Rejected by Claude | {n} |",
+        "row_err": "| Errored | {n} |",
+        "keep_h": "## Kept · {n} (sorted by score desc)\n",
+        "keep_tbl": "| # | File | Claude | What it says | Crop? | Crop reason |",
+        "keep_sep": "|---|---|---|---|---|---|",
+        "crop_yes": "yes · {ratio}",
+        "crop_no": "no",
+        "none": "_None_\n",
+        "rej_h": "\n## Rejected by Claude · {n}\n",
+        "rej_note": "_Strict-curator mode rejects by default; the reason column says why._\n",
+        "rej_tbl": "| File | Claude | Reason | What it says | Tags |\n|---|---|---|---|---|",
+        "dup_h": "\n## Burst duplicates · {n}\n",
+        "dup_note": "_Same-second bursts; highest-score frame kept. Pass `--dedup-window 0` to see every frame._\n",
+        "dup_tbl": "| File | Local score | Lost to |\n|---|---|---|",
+        "blur_h": "\n## Blurry · {n}\n",
+        "blur_note": "_Laplacian variance < {sharp}. Lower `--sharpness-min` if you shoot intentional motion blur._\n",
+        "blur_tbl": "| File | Sharpness |\n|---|---|",
+        "low_h": "\n## Below local-min · {n}\n",
+        "low_note": "_SigLIP < {local_min}; skipped Claude to save tokens. Lower `--local-min` to surface them._\n",
+        "low_tbl": "| File | SigLIP |\n|---|---|",
+        "err_h": "\n## Errored · {n}\n",
+        "guide_h": "\n---\n## How to read this report\n",
+        "g_local": "- **Local score = SigLIP-v2.5 aesthetic score** (1-10). Runs locally in seconds. Coarse pre-filter.",
+        "g_claude": "- **Claude score** (1-10). Vision-model judgment; weights moments, eye contact, focus, framing.",
+        "g_bake": "- **Crops are baked**: kept JPGs were losslessly cropped via `jpegtran` — every viewer (Preview, Photos.app, WhatsApp) shows the crop. Pixel-exact, zero re-encoding. Originals untouched.",
+        "g_xmp": "- **Crops live in `.xmp` sidecars**: Lightroom / Bridge / Capture One auto-apply them. Plain Preview / Photos.app shows the full frame. Re-run with `--bake` to bake crops into the JPGs.",
+        "g_recover": "- **To rescue a rejected photo**: find the filename in the relevant section above and grab it from the source folder.",
+    },
+    "zh": {
+        "title": "# 选片报告\n",
+        "src": "- **源**：`{src}`",
+        "dst": "- **目标**：`{dst}`",
+        "mode": "- **模式**：{mode}",
+        "mode_copy": "复制",
+        "mode_link": "软链接",
+        "mode_bake": "  + jpegtran 无损烘焙裁剪",
+        "thresh": "- **本地阈值**:sharpness ≥ {sharp} · SigLIP ≥ {local_min}(送 Claude 复审)",
+        "model": "- **Claude 模型**：{model}",
+        "dedup": "- **连拍去重窗口**：{window} 秒\n",
+        "summary_h": "## 总览\n",
+        "tbl_head": "| 类别 | 张数 |\n|---|---|",
+        "row_total": "| 总计 | {n} |",
+        "row_keep": "| **保留** | **{n}**(其中 {cropped} 张建议裁剪)|",
+        "row_dup": "| 连拍去重剔除 | {n} |",
+        "row_blur": "| 模糊剔除 | {n} |",
+        "row_low": "| 本地分太低(未送 Claude)| {n} |",
+        "row_reject": "| Claude 否决 | {n} |",
+        "row_err": "| 出错 | {n} |",
+        "keep_h": "## 保留 · {n} 张（分数从高到低）\n",
+        "keep_tbl": "| # | 文件 | Claude分 | 这张照片说了什么 | 是否裁剪 | 裁剪理由 |",
+        "keep_sep": "|---|---|---|---|---|---|",
+        "crop_yes": "是 · {ratio}",
+        "crop_no": "否",
+        "none": "_无_\n",
+        "rej_h": "\n## Claude 否决 · {n} 张\n",
+        "rej_note": "_严苛策展人模式默认 reject，理由列里说为啥不行。_\n",
+        "rej_tbl": "| 文件 | Claude分 | 否决理由 | 这张照片说了什么 | 标签 |\n|---|---|---|---|---|",
+        "dup_h": "\n## 连拍去重剔除 · {n} 张\n",
+        "dup_note": "_同一秒/几秒内连续多张，已留分数最高那张。如果你想看到所有版本，加 `--dedup-window 0`。_\n",
+        "dup_tbl": "| 文件 | 本地分 | 让位给 |\n|---|---|---|",
+        "blur_h": "\n## 模糊剔除 · {n} 张\n",
+        "blur_note": "_Laplacian 方差 < {sharp}。有意的虚化/动感请加 `--sharpness-min` 调低。_\n",
+        "blur_tbl": "| 文件 | 清晰度 |\n|---|---|",
+        "low_h": "\n## 本地分太低（未送 Claude）· {n} 张\n",
+        "low_note": "_SigLIP < {local_min}，节省 token 直接劝退。觉得有可惜的，把 `--local-min` 调低。_\n",
+        "low_tbl": "| 文件 | SigLIP分 |\n|---|---|",
+        "err_h": "\n## 出错 · {n} 张\n",
+        "guide_h": "\n---\n## 怎么读这份报告\n",
+        "g_local": "- **本地分 = SigLIP-v2.5 美学分** 1-10，本地秒级跑出来，是粗筛。",
+        "g_claude": "- **Claude 分** 1-10，由 Claude vision 给出，更看重摄影常识（闭眼/失焦/穿帮/构图）。",
+        "g_bake": "- **裁剪生效**：被裁的图已经用 `jpegtran` **无损切好**——任何看图工具（Preview、Photos.app、微信）都直接显示裁剪后的画面。原始 JPEG 块零重编码，画质不损失。源文件夹的原片完全没动过。",
+        "g_xmp": "- **裁剪生效**：每张被裁的图旁边有 `.xmp` sidecar。Lightroom / Bridge / Capture One 打开会自动套上裁剪框，**原片像素零修改**，不满意一键还原全帧。Preview / Photos.app 不读 sidecar，会显示全帧。要直接看裁剪结果，加 `--bake` 重跑。",
+        "g_recover": "- **想找回某张被剔除的**：在对应分组里看到文件名，去原文件夹手动捞就好。",
+    },
+}
+
+
 def write_report(out_dir: Path, src_folder: Path, records: list, args):
+    S = REPORT_STRINGS.get(args.lang, REPORT_STRINGS["en"])
     def cnt(s): return sum(1 for r in records if r["status"] == s)
     n_total = len(records)
     n_keep = cnt("keep")
@@ -629,49 +745,52 @@ def write_report(out_dir: Path, src_folder: Path, records: list, args):
     n_cropped = sum(1 for r in records if r["status"] == "keep" and r.get("crop"))
 
     L = []
-    L.append("# 选片报告\n")
-    L.append(f"- **源**：`{src_folder}`")
-    L.append(f"- **目标**：`{out_dir}`")
-    L.append(f"- **模式**：{'复制' if args.copy else '软链接'}{'  + jpegtran 无损烘焙裁剪' if args.bake else ''}")
-    L.append(f"- **本地阈值**：sharpness ≥ {args.sharpness_min} · SigLIP ≥ {args.local_min}（送 Claude 复审）")
+    L.append(S["title"])
+    L.append(S["src"].format(src=src_folder))
+    L.append(S["dst"].format(dst=out_dir))
+    mode = S["mode_copy"] if args.copy else S["mode_link"]
+    if args.bake:
+        mode += S["mode_bake"]
+    L.append(S["mode"].format(mode=mode))
+    L.append(S["thresh"].format(sharp=args.sharpness_min, local_min=args.local_min))
     if not args.no_claude:
-        L.append(f"- **Claude 模型**：{args.model}")
-    L.append(f"- **连拍去重窗口**：{args.dedup_window} 秒\n")
+        L.append(S["model"].format(model=args.model))
+    L.append(S["dedup"].format(window=args.dedup_window))
 
-    L.append("## 总览\n")
-    L.append("| 类别 | 张数 |\n|---|---|")
-    L.append(f"| 总计 | {n_total} |")
-    L.append(f"| **保留** | **{n_keep}**（其中 {n_cropped} 张建议裁剪）|")
-    if n_dup:    L.append(f"| 连拍去重剔除 | {n_dup} |")
-    if n_blur:   L.append(f"| 模糊剔除 | {n_blur} |")
-    if n_low:    L.append(f"| 本地分太低（未送 Claude）| {n_low} |")
-    if n_reject: L.append(f"| Claude 否决 | {n_reject} |")
-    if n_err:    L.append(f"| 出错 | {n_err} |")
+    L.append(S["summary_h"])
+    L.append(S["tbl_head"])
+    L.append(S["row_total"].format(n=n_total))
+    L.append(S["row_keep"].format(n=n_keep, cropped=n_cropped))
+    if n_dup:    L.append(S["row_dup"].format(n=n_dup))
+    if n_blur:   L.append(S["row_blur"].format(n=n_blur))
+    if n_low:    L.append(S["row_low"].format(n=n_low))
+    if n_reject: L.append(S["row_reject"].format(n=n_reject))
+    if n_err:    L.append(S["row_err"].format(n=n_err))
     L.append("")
 
     keep_recs = sorted([r for r in records if r["status"] == "keep"],
                        key=lambda r: -(r.get("claude_score") or r["score"] or 0))
-    L.append(f"## 保留 · {n_keep} 张（分数从高到低）\n")
+    L.append(S["keep_h"].format(n=n_keep))
     if keep_recs:
-        L.append("| # | 文件 | Claude分 | 这张照片说了什么 | 是否裁剪 | 裁剪理由 |")
-        L.append("|---|---|---|---|---|---|")
+        L.append(S["keep_tbl"])
+        L.append(S["keep_sep"])
         for i, r in enumerate(keep_recs, 1):
             crop = r.get("crop")
             if crop:
-                cb = f"是 · {crop.get('ratio','?')}"
+                cb = S["crop_yes"].format(ratio=crop.get("ratio", "?"))
                 why = crop.get("why", "")
             else:
-                cb = "否"; why = ""
+                cb = S["crop_no"]; why = ""
             says = (r.get("claude") or {}).get("what_it_says", "") or (r.get("claude") or {}).get("note", "")
             L.append(f"| {i} | `{r['name']}` | {r.get('claude_score','?')} | {says} | {cb} | {why} |")
     else:
-        L.append("_无_\n")
+        L.append(S["none"])
 
     rej_recs = [r for r in records if r["status"] == "reject"]
-    L.append(f"\n## Claude 否决 · {n_reject} 张\n")
-    L.append("_严苛策展人模式默认 reject，理由列里说为啥不行。_\n")
+    L.append(S["rej_h"].format(n=n_reject))
+    L.append(S["rej_note"])
     if rej_recs:
-        L.append("| 文件 | Claude分 | 否决理由 | 这张照片说了什么 | 标签 |\n|---|---|---|---|---|")
+        L.append(S["rej_tbl"])
         for r in sorted(rej_recs, key=lambda r: -(r.get("claude_score") or 0)):
             cl = r.get("claude") or {}
             reason = cl.get("reject_reason") or cl.get("note", "")
@@ -680,44 +799,41 @@ def write_report(out_dir: Path, src_folder: Path, records: list, args):
             L.append(f"| `{r['name']}` | {r.get('claude_score','?')} | {reason} | {says} | {issues} |")
 
     dup_recs = [r for r in records if r["status"] == "duplicate"]
-    L.append(f"\n## 连拍去重剔除 · {n_dup} 张\n")
-    L.append("_同一秒/几秒内连续多张，已留分数最高那张。如果你想看到所有版本，加 `--dedup-window 0`。_\n")
+    L.append(S["dup_h"].format(n=n_dup))
+    L.append(S["dup_note"])
     if dup_recs:
-        L.append("| 文件 | 本地分 | 让位给 |\n|---|---|---|")
+        L.append(S["dup_tbl"])
         for r in sorted(dup_recs, key=lambda r: r["name"]):
             L.append(f"| `{r['name']}` | {r['score']:.2f} | `{r.get('burst_winner','?')}` |")
 
     if n_blur:
         blur_recs = [r for r in records if r["status"] == "blur"]
-        L.append(f"\n## 模糊剔除 · {n_blur} 张\n")
-        L.append(f"_Laplacian 方差 < {args.sharpness_min}。有意的虚化/动感请加 `--sharpness-min` 调低。_\n")
-        L.append("| 文件 | 清晰度 |\n|---|---|")
+        L.append(S["blur_h"].format(n=n_blur))
+        L.append(S["blur_note"].format(sharp=args.sharpness_min))
+        L.append(S["blur_tbl"])
         for r in sorted(blur_recs, key=lambda r: -(r["sharp"] or 0)):
             L.append(f"| `{r['name']}` | {r['sharp']:.0f} |")
 
     if n_low:
         low_recs = [r for r in records if r["status"] == "low"]
-        L.append(f"\n## 本地分太低（未送 Claude）· {n_low} 张\n")
-        L.append(f"_SigLIP < {args.local_min}，节省 token 直接劝退。觉得有可惜的，把 `--local-min` 调低。_\n")
-        L.append("| 文件 | SigLIP分 |\n|---|---|")
+        L.append(S["low_h"].format(n=n_low))
+        L.append(S["low_note"].format(local_min=args.local_min))
+        L.append(S["low_tbl"])
         for r in sorted(low_recs, key=lambda r: -(r["score"] or 0)):
             L.append(f"| `{r['name']}` | {r['score']:.2f} |")
 
     if n_err:
         err_recs = [r for r in records if r["status"] in ("error", "claude_err")]
-        L.append(f"\n## 出错 · {n_err} 张\n")
+        L.append(S["err_h"].format(n=n_err))
         for r in err_recs:
             err = (r.get("claude") or {}).get("error", "load failed")
             L.append(f"- `{r['name']}` — {err}")
 
-    L.append("\n---\n## 怎么读这份报告\n")
-    L.append("- **本地分 = SigLIP-v2.5 美学分** 1-10，本地秒级跑出来，是粗筛。")
-    L.append("- **Claude 分** 1-10，由 Claude vision 给出，更看重摄影常识（闭眼/失焦/穿帮/构图）。")
-    if args.bake:
-        L.append("- **裁剪生效**：被裁的图已经用 `jpegtran` **无损切好**——任何看图工具（Preview、Photos.app、微信）都直接显示裁剪后的画面。原始 JPEG 块零重编码，画质不损失。源文件夹的原片完全没动过。")
-    else:
-        L.append("- **裁剪生效**：每张被裁的图旁边有 `.xmp` sidecar。Lightroom / Bridge / Capture One 打开会自动套上裁剪框，**原片像素零修改**，不满意一键还原全帧。Preview / Photos.app 不读 sidecar，会显示全帧。要直接看裁剪结果，加 `--bake` 重跑。")
-    L.append("- **想找回某张被剔除的**：在对应分组里看到文件名，去原文件夹手动捞就好。")
+    L.append(S["guide_h"])
+    L.append(S["g_local"])
+    L.append(S["g_claude"])
+    L.append(S["g_bake"] if args.bake else S["g_xmp"])
+    L.append(S["g_recover"])
 
     (out_dir / "report.md").write_text("\n".join(L), encoding="utf-8")
 
