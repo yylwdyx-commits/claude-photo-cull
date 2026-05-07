@@ -11,7 +11,7 @@ Most "AI photo selection" tools optimize for "looks technically OK". This one ru
 ## Quickstart
 
 ```bash
-git clone https://github.com/<your-user>/claude-photo-cull
+git clone https://github.com/yylwdyx-commits/claude-photo-cull
 cd claude-photo-cull
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -36,7 +36,7 @@ python cull.py /path/to/photos --no-claude --threshold 5.5
 ## Use as a Claude Code skill
 
 ```bash
-git clone https://github.com/<your-user>/claude-photo-cull ~/.claude/skills/photo-cull
+git clone https://github.com/yylwdyx-commits/claude-photo-cull ~/.claude/skills/photo-cull
 pip install -r ~/.claude/skills/photo-cull/requirements.txt
 ```
 
