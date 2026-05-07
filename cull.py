@@ -442,6 +442,11 @@ def main():
     if not folder.is_dir():
         sys.exit(f"not a directory: {folder}")
 
+    if sys.platform == "win32" and not args.copy:
+        print("note: Windows detected — switching to --copy "
+              "(symlinks need admin / Developer Mode).", file=sys.stderr)
+        args.copy = True
+
     jpegtran = None
     if args.bake:
         args.copy = True  # bake requires real files
@@ -480,7 +485,7 @@ def main():
     scorer = Scorer()
 
     # ----- Phase 1: local screening -----
-    print(f"\n[phase 1] local screening …", file=sys.stderr)
+    print("\n[phase 1] local screening …", file=sys.stderr)
     records = []
     t1 = time.time()
     for i, p in enumerate(files):

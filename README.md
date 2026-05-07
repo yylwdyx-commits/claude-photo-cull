@@ -1,5 +1,6 @@
 # claude-photo-cull
 
+
 A harsh photo curator. Two-stage pipeline: free local pre-filter (SigLIP-v2.5 aesthetic + Laplacian sharpness + EXIF-burst dedup) feeds a strict Claude vision pass that defaults to **reject**. Survivors land in `keep/` as symlinks (or copies, or losslessly baked crops). **Originals are never modified.**
 
 Ships as both a standalone CLI and a [Claude Code](https://claude.com/claude-code) skill.
@@ -82,6 +83,10 @@ photos/
 ```
 
 `.xmp` sidecars don't render in Preview or Photos.app — use `--bake` for crops that show everywhere.
+
+## Example output
+
+See [`examples/sample-report.md`](./examples/sample-report.md) for what `report.md` looks like after a run.
 
 ## All flags
 

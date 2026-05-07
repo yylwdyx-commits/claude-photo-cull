@@ -7,7 +7,7 @@ venv/
 .env.local
 .DS_Store
 
-# example test outputs
+# test outputs (but keep examples/)
 keep/
 *.xmp
-report.md
+/report.md
